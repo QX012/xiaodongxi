@@ -30,17 +30,45 @@ try:
 except:
     pass
 
+# 鼠标事件常量
+MOUSEEVENTF_ABSOLUTE = 0x8000
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
 
+# 屏幕尺寸
+SM_CXSCREEN = 0
+SM_CYSCREEN = 1
+
+# 获取屏幕尺寸
+screen_width = ctypes.windll.user32.GetSystemMetrics(SM_CXSCREEN)
+screen_height = ctypes.windll.user32.GetSystemMetrics(SM_CYSCREEN)
+
 def move_mouse(x, y):
-    ctypes.windll.user32.SetCursorPos(int(x), int(y))
+    # 使用绝对坐标移动鼠标，确保游戏能够正确捕捉
+    # 将屏幕坐标转换为绝对坐标（0-65535）
+    absolute_x = int((x / screen_width) * 65535)
+    absolute_y = int((y / screen_height) * 65535)
+    
+    # 使用带有绝对坐标和移动标志的鼠标事件
+    ctypes.windll.user32.mouse_event(
+        MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE,
+        absolute_x, absolute_y, 0, 0
+    )
 
 def right_click_down():
     ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
 
 def right_click_up():
     ctypes.windll.user32.mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+
+def left_click_down():
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+
+def left_click_up():
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 # ---------------------------------------------------------
 # 桌面绘制透明窗口
@@ -291,6 +319,9 @@ class SpirePainterApp:
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
+        # 鼠标按键选择
+        self.mouse_button = tk.StringVar(value="右键")
+
         self.font_map = {
             "微软雅黑 (默认)": "msyh.ttc",
             "黑体 (粗犷)": "simhei.ttf",
@@ -409,6 +440,15 @@ class SpirePainterApp:
         self.custom_color_entry.pack(side="left", padx=5)
         self.custom_color_btn = tk.Button(custom_color_frame, text="应用", command=self.apply_custom_color, width=6)
         self.custom_color_btn.pack(side="left", padx=2)
+
+        # 鼠标按键选择
+        mouse_frame = tk.Frame(color_frame)
+        mouse_frame.pack(fill="x", pady=2)
+        tk.Label(mouse_frame, text="鼠标按键:").pack(side="left")
+        mouse_btn_frame = tk.Frame(mouse_frame)
+        mouse_btn_frame.pack(side="left", padx=5)
+        tk.Radiobutton(mouse_btn_frame, text="左键", variable=self.mouse_button, value="左键").pack(side="left", padx=5)
+        tk.Radiobutton(mouse_btn_frame, text="右键", variable=self.mouse_button, value="右键").pack(side="left", padx=5)
 
         # --- 启动按钮 ---
         self.btn_start_game = tk.Button(self.left_panel, text="🎮 ", bg="#4CAF50", fg="white", 
@@ -590,13 +630,14 @@ class SpirePainterApp:
         DigitalAmberOverlay(self.root, self.current_lineart_path, self.run_desktop_draw_thread)
 
     def run_draw_thread(self, rx, ry, rw, rh, img_path):
-        threading.Thread(target=self.draw_logic, args=(rx, ry, rw, rh, img_path), daemon=True).start()
+        mouse_button = self.mouse_button.get()
+        threading.Thread(target=self.draw_logic, args=(rx, ry, rw, rh, img_path, mouse_button), daemon=True).start()
 
     def run_desktop_draw_thread(self, rx, ry, rw, rh, img_path):
         pen_color = self.get_pen_color()
         DesktopDrawingOverlay(self.root, img_path, rx, ry, rw, rh, pen_color)
 
-    def draw_logic(self, rx, ry, rw, rh, img_path):
+    def draw_logic(self, rx, ry, rw, rh, img_path, mouse_button):
         global abort_drawing
         abort_drawing = False 
         
@@ -613,7 +654,16 @@ class SpirePainterApp:
 
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
         
-        current_step = self.speed_slider.get()
+        # 使用固定的小步长，确保绘制连贯
+        current_step = 1  # 始终使用1，确保每个点都被绘制
+        
+        # 根据选择的鼠标按键选择相应的函数
+        if mouse_button == "左键":
+            click_down = left_click_down
+            click_up = left_click_up
+        else:
+            click_down = right_click_down
+            click_up = right_click_up
         
         for contour in contours:
             if abort_drawing:
@@ -622,25 +672,37 @@ class SpirePainterApp:
             if len(contour) == 0:
                 continue
             
+            # 确保至少有两个点
+            if len(contour) < 2:
+                continue
+            
+            # 移动到起点
             start_x = int(offset_x + contour[0][0][0] * scale)
             start_y = int(offset_y + contour[0][0][1] * scale)
             move_mouse(start_x, start_y)
-            time.sleep(0.005) 
+            time.sleep(0.01)  # 稍微增加延迟，确保游戏有时间响应
             
-            right_click_down()
-            time.sleep(0.005) 
+            # 按下鼠标按键
+            click_down()
+            time.sleep(0.01)  # 稍微增加延迟，确保按键状态被正确捕捉
             
-            for point in contour[1::current_step]:
+            # 遍历轮廓点，确保线条连贯
+            for i in range(1, len(contour), current_step):
                 if abort_drawing:
                     break
                     
+                # 获取当前点
+                point = contour[i]
                 px = int(offset_x + point[0][0] * scale)
                 py = int(offset_y + point[0][1] * scale)
+                
+                # 移动鼠标到当前点
                 move_mouse(px, py)
-                time.sleep(0.002) 
+                time.sleep(0.005)  # 适当的延迟，确保移动被游戏捕捉
             
-            right_click_up()
-            time.sleep(0.005) 
+            # 释放鼠标按键
+            click_up()
+            time.sleep(0.01)  # 稍微增加延迟，确保按键状态被正确释放
         
         if abort_drawing:
             print("绘图已被玩家强行中断！")
