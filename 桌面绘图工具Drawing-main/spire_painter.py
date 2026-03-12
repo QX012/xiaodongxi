@@ -74,7 +74,7 @@ def left_click_up():
 # 桌面绘制透明窗口
 # ---------------------------------------------------------
 class DesktopDrawingOverlay:
-    def __init__(self, master, img_path, rx, ry, rw, rh, pen_color='black'):
+    def __init__(self, master, img_path, rx, ry, rw, rh, pen_color='black', canvas_color='white'):
         self.master = master
         self.img_path = img_path
         self.rx = rx
@@ -82,14 +82,17 @@ class DesktopDrawingOverlay:
         self.rw = rw
         self.rh = rh
         self.pen_color = pen_color
+        self.canvas_color = canvas_color
         
         self.top = tk.Toplevel(master)
-        self.top.attributes('-fullscreen', True)
+        # 不使用全屏，而是根据框选范围设置窗口大小和位置
+        self.top.geometry(f"{int(rw)}x{int(rh)}+{int(rx)}+{int(ry)}")
         self.top.attributes('-topmost', True)
-        self.top.attributes('-transparentcolor', 'white')
-        self.top.config(cursor="crosshair")
+        self.top.attributes('-transparentcolor', 'white')  # 固定透明色为白色
+        self.top.overrideredirect(True)  # 隐藏窗口标题栏和边框
+        self.top.config(cursor="crosshair", borderwidth=0, highlightthickness=0)
         
-        self.canvas = tk.Canvas(self.top, highlightthickness=0, bg='white')
+        self.canvas = tk.Canvas(self.top, width=rw, height=rh, highlightthickness=0, bg=canvas_color)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
         self.canvas.bind("<Key>", self.on_key)
@@ -109,6 +112,11 @@ class DesktopDrawingOverlay:
         self.canvas.bind("<ButtonPress-1>", self.start_canvas_drag)
         self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self.stop_canvas_drag)
+        
+        # 绑定窗口拖动事件
+        self.canvas.bind("<ButtonPress-2>", self.start_window_drag)  # 中键拖动窗口
+        self.canvas.bind("<B2-Motion>", self.on_window_drag)
+        self.canvas.bind("<ButtonRelease-2>", self.stop_window_drag)
         
         self.start_drawing()
 
@@ -162,10 +170,21 @@ class DesktopDrawingOverlay:
         self.top.destroy()
 
     def minimize_window(self):
-        self.top.iconify()
+        # 隐藏控制面板，而不是最小化整个窗口
+        self.control_frame.place_forget()
+        # 添加一个恢复按钮到窗口角落
+        self.restore_btn = tk.Button(self.top, text="🗕", bg='#333333', fg='white',
+                                     command=self.restore_control_panel, width=3, height=1)
+        self.restore_btn.place(x=5, y=5)
 
     def toggle_topmost(self):
         self.top.attributes('-topmost', self.topmost_var.get())
+    
+    def restore_control_panel(self):
+        # 移除恢复按钮
+        self.restore_btn.destroy()
+        # 重新显示控制面板
+        self.control_frame.place(x=10, y=10)
 
     def start_drawing(self):
         threading.Thread(target=self.draw_on_desktop, daemon=True).start()
@@ -182,8 +201,9 @@ class DesktopDrawingOverlay:
         img_h, img_w = edges.shape
         scale = min(self.rw / img_w, self.rh / img_h)
         
-        offset_x = self.rx + (self.rw - img_w * scale) / 2
-        offset_y = self.ry + (self.rh - img_h * scale) / 2
+        # 相对于幕布窗口的左上角计算偏移量，而不是相对于整个屏幕
+        offset_x = (self.rw - img_w * scale) / 2
+        offset_y = (self.rh - img_h * scale) / 2
 
         contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
         
@@ -244,6 +264,31 @@ class DesktopDrawingOverlay:
     def stop_canvas_drag(self, event):
         """停止拖动"""
         self.is_dragging = False
+    
+    def start_window_drag(self, event):
+        """开始拖动窗口"""
+        self.window_drag_start_x = event.x
+        self.window_drag_start_y = event.y
+    
+    def on_window_drag(self, event):
+        """拖动窗口过程"""
+        dx = event.x - self.window_drag_start_x
+        dy = event.y - self.window_drag_start_y
+        
+        # 获取当前窗口位置
+        x = self.top.winfo_x()
+        y = self.top.winfo_y()
+        
+        # 计算新位置
+        new_x = x + dx
+        new_y = y + dy
+        
+        # 移动窗口
+        self.top.geometry(f"+{new_x}+{new_y}")
+    
+    def stop_window_drag(self, event):
+        """停止拖动窗口"""
+        pass
 
 # ---------------------------------------------------------
 # "数字琥珀" 全屏选区界面
@@ -321,6 +366,15 @@ class SpirePainterApp:
 
         # 鼠标按键选择
         self.mouse_button = tk.StringVar(value="右键")
+        
+        # 风格选择
+        self.style = tk.StringVar(value="默认")
+        self.style_options = {
+            "默认": "default",
+            "漫画风格": "comic",
+            "手绘风格": "handdrawn",
+            "素描风格": "sketch"
+        }
 
         self.font_map = {
             "微软雅黑 (默认)": "msyh.ttc",
@@ -450,6 +504,31 @@ class SpirePainterApp:
         tk.Radiobutton(mouse_btn_frame, text="左键", variable=self.mouse_button, value="左键").pack(side="left", padx=5)
         tk.Radiobutton(mouse_btn_frame, text="右键", variable=self.mouse_button, value="右键").pack(side="left", padx=5)
 
+        # 风格选择
+        style_frame = tk.Frame(color_frame)
+        style_frame.pack(fill="x", pady=2)
+        tk.Label(style_frame, text="风格选择:").pack(side="left")
+        self.style_combo = ttk.Combobox(style_frame, values=list(self.style_options.keys()), state="readonly", width=12)
+        self.style_combo.current(0)
+        self.style_combo.pack(side="left", padx=5)
+
+        # 幕布颜色选择
+        canvas_frame = tk.Frame(color_frame)
+        canvas_frame.pack(fill="x", pady=2)
+        tk.Label(canvas_frame, text="幕布颜色:").pack(side="left")
+        self.canvas_color = tk.StringVar(value="白色")
+        self.canvas_color_map = {
+            "白色": "white",
+            "黑色": "black",
+            "灰色": "gray",
+            "蓝色": "blue",
+            "绿色": "green",
+            "红色": "red"
+        }
+        self.canvas_color_combo = ttk.Combobox(canvas_frame, values=list(self.canvas_color_map.keys()), state="readonly", width=12)
+        self.canvas_color_combo.current(0)
+        self.canvas_color_combo.pack(side="left", padx=5)
+
         # --- 启动按钮 ---
         self.btn_start_game = tk.Button(self.left_panel, text="🎮 ", bg="#4CAF50", fg="white", 
                                         font=("Arial", 10, "bold"), command=self.start_digital_amber, state=tk.DISABLED, height=2)
@@ -499,22 +578,53 @@ class SpirePainterApp:
         
         img = cv2.imdecode(np.fromfile(self.last_raw_image_path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
         detail = self.detail_slider.get() 
+        selected_style = self.style_combo.get()
+        style_key = self.style_options[selected_style]
 
-        k_size = int(max(1, (11 - detail) // 2 * 2 + 1))
-        if k_size > 1:
-            img = cv2.GaussianBlur(img, (k_size, k_size), 0)
+        # 根据不同风格生成线稿
+        if style_key == "default":
+            # 默认风格
+            k_size = int(max(1, (11 - detail) // 2 * 2 + 1))
+            if k_size > 1:
+                img = cv2.GaussianBlur(img, (k_size, k_size), 0)
 
-        lower_thresh = int(180 - detail * 15)
-        upper_thresh = int(250 - detail * 15)
+            lower_thresh = int(180 - detail * 15)
+            upper_thresh = int(250 - detail * 15)
+            
+            edges = cv2.Canny(img, lower_thresh, upper_thresh)
+            inverted = cv2.bitwise_not(edges)
         
-        edges = cv2.Canny(img, lower_thresh, upper_thresh)
-        inverted = cv2.bitwise_not(edges)
+        elif style_key == "comic":
+            # 漫画风格
+            img = cv2.GaussianBlur(img, (3, 3), 0)
+            edges = cv2.Canny(img, 50, 150)
+            # 膨胀操作，使线条更粗
+            kernel = np.ones((2, 2), np.uint8)
+            edges = cv2.dilate(edges, kernel, iterations=1)
+            inverted = cv2.bitwise_not(edges)
         
+        elif style_key == "handdrawn":
+            # 手绘风格
+            # 使用中值滤波，模拟手绘效果
+            img = cv2.medianBlur(img, 5)
+            edges = cv2.Canny(img, 80, 180)
+            # 轻微腐蚀，使线条更细
+            kernel = np.ones((1, 1), np.uint8)
+            edges = cv2.erode(edges, kernel, iterations=1)
+            inverted = cv2.bitwise_not(edges)
+        
+        elif style_key == "sketch":
+            # 素描风格
+            # 使用 bilateralFilter 保持边缘
+            img = cv2.bilateralFilter(img, 9, 75, 75)
+            edges = cv2.Canny(img, 100, 200)
+            inverted = cv2.bitwise_not(edges)
+
         save_path = os.path.join(self.output_dir, "last_image_lineart.png")
         cv2.imencode('.png', inverted)[1].tofile(save_path)
         
         self.current_lineart_path = save_path
-        self.status_label.config(text=f"图片线稿已生成/刷新！\n(当前精细度: {detail})")
+        self.status_label.config(text=f"图片线稿已生成/刷新！\n(当前风格: {selected_style}, 精细度: {detail})")
         self.btn_start_game.config(state=tk.NORMAL)
         self.btn_start_desktop.config(state=tk.NORMAL)
         
@@ -635,7 +745,9 @@ class SpirePainterApp:
 
     def run_desktop_draw_thread(self, rx, ry, rw, rh, img_path):
         pen_color = self.get_pen_color()
-        DesktopDrawingOverlay(self.root, img_path, rx, ry, rw, rh, pen_color)
+        canvas_color_name = self.canvas_color_combo.get()
+        canvas_color = self.canvas_color_map[canvas_color_name]
+        DesktopDrawingOverlay(self.root, img_path, rx, ry, rw, rh, pen_color, canvas_color)
 
     def draw_logic(self, rx, ry, rw, rh, img_path, mouse_button):
         global abort_drawing
